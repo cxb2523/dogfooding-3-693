@@ -36,8 +36,10 @@
     </style>
 </head>
 <body>
-    <div id="info">3D 互动波浪矩阵 - 移动鼠标与立方体交互</div>
+    <div id="info">3D 互动波浪矩阵 - 移动鼠标与立方体交互，点击触发涟漪，滚轮缩放</div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17.0/dist/lil-gui.umd.min.js"></script>
     <script>
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0a0a1a);
@@ -57,6 +59,13 @@
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
+        
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.minDistance = 10;
+        controls.maxDistance = 100;
+        controls.maxPolarAngle = Math.PI / 2 - 0.1;
         
         const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
         scene.add(ambientLight);
@@ -121,6 +130,19 @@
             }
         }
         
+        const ripples = [];
+        
+        function addRipple(x, z) {
+            ripples.push({
+                x: x,
+                z: z,
+                startTime: Date.now(),
+                speed: 8,
+                amplitude: 4,
+                decay: 1.5
+            });
+        }
+        
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
         let hoveredCube = null;
@@ -130,7 +152,21 @@
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         }
         
+        function onMouseClick(event) {
+            if (event.button !== 0) return;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (intersects.length > 0) {
+                const cube = intersects[0].object;
+                const { baseX, baseZ } = cube.userData;
+                addRipple(baseX, baseZ);
+            }
+        }
+        
         window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('click', onMouseClick, false);
         
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
@@ -140,8 +176,25 @@
         
         window.addEventListener('resize', onWindowResize, false);
         
+        const params = {
+            waveSpeed: 1.0,
+            waveHeight: 2.0,
+            wireframe: false
+        };
+        
+        const gui = new lil.GUI({ title: '控制面板' });
+        gui.add(params, 'waveSpeed', 0.1, 5.0).name('波浪速度');
+        gui.add(params, 'waveHeight', 0.5, 5.0).name('波浪高度');
+        gui.add(params, 'wireframe').name('线框模式').onChange((value) => {
+            cubes.forEach(cube => {
+                cube.material.wireframe = value;
+            });
+        });
+        
         function animate() {
             requestAnimationFrame(animate);
+            
+            controls.update();
             
             const time = Date.now() * 0.001;
             
@@ -169,19 +222,45 @@
                 }
             }
             
+            const currentTime = Date.now();
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                const ripple = ripples[i];
+                const age = (currentTime - ripple.startTime) * 0.001;
+                if (age > 3) {
+                    ripples.splice(i, 1);
+                }
+            }
+            
             for (let i = 0; i < cubes.length; i++) {
                 const cube = cubes[i];
                 const { baseX, baseZ, isHovered, targetScale } = cube.userData;
                 
                 const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
                 
-                const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
-                const secondWave = Math.cos(baseX * 0.3 + time * 1.5) * Math.sin(baseZ * 0.3 + time) * 1.5;
+                const waveHeight = Math.sin(distance * 0.5 - time * 2 * params.waveSpeed) * params.waveHeight;
+                const secondWave = Math.cos(baseX * 0.3 + time * 1.5 * params.waveSpeed) * Math.sin(baseZ * 0.3 + time * params.waveSpeed) * (params.waveHeight * 0.75);
                 
                 let targetY = waveHeight + secondWave;
                 
                 if (isHovered) {
                     targetY += 2;
+                }
+                
+                for (let r = 0; r < ripples.length; r++) {
+                    const ripple = ripples[r];
+                    const age = (currentTime - ripple.startTime) * 0.001;
+                    const rippleDistance = Math.sqrt(
+                        Math.pow(baseX - ripple.x, 2) + Math.pow(baseZ - ripple.z, 2)
+                    );
+                    const rippleRadius = age * ripple.speed;
+                    const rippleWidth = 2.0;
+                    
+                    if (Math.abs(rippleDistance - rippleRadius) < rippleWidth) {
+                        const normalizedDist = Math.abs(rippleDistance - rippleRadius) / rippleWidth;
+                        const rippleEffect = Math.cos(normalizedDist * Math.PI / 2);
+                        const decayFactor = Math.exp(-age * ripple.decay);
+                        targetY += ripple.amplitude * rippleEffect * decayFactor;
+                    }
                 }
                 
                 cube.position.y += (targetY - cube.position.y) * 0.1;
