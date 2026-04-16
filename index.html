@@ -34,11 +34,39 @@
             z-index: 100;
         }
     </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.17/+esm"
+        }
+    }
+    </script>
 </head>
 <body>
-    <div id="info">3D 互动波浪矩阵 - 移动鼠标与立方体交互</div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script>
+    <div id="info">3D 互动波浪矩阵 - 移动鼠标交互 | 点击产生涟漪 | 拖拽旋转视角</div>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import GUI from 'lil-gui';
+        
+        const params = {
+            waveSpeed: 1.0,
+            waveHeight: 2.0,
+            wireframe: false
+        };
+        
+        const gui = new GUI();
+        gui.domElement.style.marginTop = '60px';
+        gui.add(params, 'waveSpeed', 0.1, 3.0, 0.1).name('波浪速度');
+        gui.add(params, 'waveHeight', 0.5, 5.0, 0.1).name('波浪高度');
+        gui.add(params, 'wireframe').name('线框模式').onChange((value) => {
+            cubes.forEach(cube => {
+                cube.material.wireframe = value;
+            });
+        });
+        
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0a0a1a);
         
@@ -57,6 +85,13 @@
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
+        
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.minDistance = 10;
+        controls.maxDistance = 60;
+        controls.maxPolarAngle = Math.PI / 2.1;
         
         const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
         scene.add(ambientLight);
@@ -83,6 +118,7 @@
         const spacing = 1.2;
         const cubes = [];
         const originalPositions = [];
+        const ripples = [];
         
         const geometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
         
@@ -130,7 +166,36 @@
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         }
         
+        function onClick(event) {
+            if (event.button !== 0) return;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (intersects.length > 0) {
+                const clickedCube = intersects[0].object;
+                const { baseX, baseZ } = clickedCube.userData;
+                
+                const ripple = {
+                    centerX: baseX,
+                    centerZ: baseZ,
+                    startTime: Date.now(),
+                    maxRadius: gridSize * spacing * 0.8,
+                    duration: 3000,
+                    amplitude: 4.0,
+                    speed: 8.0
+                };
+                
+                ripples.push(ripple);
+                
+                if (ripples.length > 10) {
+                    ripples.shift();
+                }
+            }
+        }
+        
         window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('click', onClick, false);
         
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
@@ -140,10 +205,49 @@
         
         window.addEventListener('resize', onWindowResize, false);
         
+        function calculateRippleOffset(baseX, baseZ, currentTime) {
+            let totalOffset = 0;
+            
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                const ripple = ripples[i];
+                const elapsed = currentTime - ripple.startTime;
+                
+                if (elapsed > ripple.duration) {
+                    ripples.splice(i, 1);
+                    continue;
+                }
+                
+                const dx = baseX - ripple.centerX;
+                const dz = baseZ - ripple.centerZ;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                
+                const currentRadius = (elapsed / 1000) * ripple.speed;
+                const waveWidth = 3.0;
+                
+                const distanceFromWave = Math.abs(distance - currentRadius);
+                
+                if (distanceFromWave < waveWidth) {
+                    const progress = elapsed / ripple.duration;
+                    const decay = Math.exp(-progress * 3) * (1 - progress);
+                    
+                    const wavePhase = (distance - currentRadius) * 2;
+                    const waveIntensity = Math.cos(wavePhase) * Math.exp(-distanceFromWave * 0.5);
+                    
+                    const amplitude = ripple.amplitude * decay * waveIntensity;
+                    totalOffset += amplitude;
+                }
+            }
+            
+            return totalOffset;
+        }
+        
         function animate() {
             requestAnimationFrame(animate);
             
             const time = Date.now() * 0.001;
+            const currentTime = Date.now();
+            
+            controls.update();
             
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(cubes);
@@ -175,10 +279,14 @@
                 
                 const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
                 
-                const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
-                const secondWave = Math.cos(baseX * 0.3 + time * 1.5) * Math.sin(baseZ * 0.3 + time) * 1.5;
+                const waveHeight = Math.sin(distance * 0.5 - time * 2 * params.waveSpeed) * params.waveHeight;
+                const secondWave = Math.cos(baseX * 0.3 + time * 1.5 * params.waveSpeed) * 
+                                   Math.sin(baseZ * 0.3 + time * params.waveSpeed) * 1.5 * (params.waveHeight / 2);
                 
                 let targetY = waveHeight + secondWave;
+                
+                const rippleOffset = calculateRippleOffset(baseX, baseZ, currentTime);
+                targetY += rippleOffset;
                 
                 if (isHovered) {
                     targetY += 2;
